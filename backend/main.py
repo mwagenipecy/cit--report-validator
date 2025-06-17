@@ -159,149 +159,6 @@ class CITValidator:
         else:
             raise ValueError(f"Unknown sheet: {sheet_name}")
     
-    def _validate_contract_data(self, data: pd.DataFrame) -> SheetValidation:
-        """Validate Contract Data sheet"""
-        validations = []
-        failed_rows = 0
-        total_rows = len(data)
-        
-        # Required columns
-        required_columns = [
-            "Reporting Date", "Contract code", "Customer Code", "Phase of Contract",
-            "Type of Contract", "Purpose of Financing", "Total Amount", "Currency of Contract"
-        ]
-        
-        # Check required columns exist
-        missing_cols = [col for col in required_columns if col not in data.columns]
-        if missing_cols:
-            validations.append(ValidationResult(
-                field="Required Columns",
-                status="fail",
-                message=f"Missing columns: {', '.join(missing_cols)}"
-            ))
-            self.critical_issues.append(f"Contract Data: Missing required columns: {', '.join(missing_cols)}")
-        
-        # Validate dates
-        date_validation = self._validate_dates(data, "Reporting Date")
-        validations.append(date_validation)
-        if date_validation.status == "fail":
-            failed_rows += len(date_validation.details) if date_validation.details else 0
-        
-        # Validate contract codes (should be unique)
-        if "Contract code" in data.columns:
-            duplicate_contracts = data[data["Contract code"].duplicated()]
-            if not duplicate_contracts.empty:
-                validations.append(ValidationResult(
-                    field="Contract Code",
-                    status="fail",
-                    message=f"Found {len(duplicate_contracts)} duplicate contract codes"
-                ))
-                failed_rows += len(duplicate_contracts)
-                self.critical_issues.append(f"Duplicate contract codes found: {len(duplicate_contracts)} records")
-            else:
-                validations.append(ValidationResult(
-                    field="Contract Code",
-                    status="pass",
-                    message="All contract codes are unique"
-                ))
-        
-        # Validate customer codes
-        if "Customer Code" in data.columns:
-            invalid_customer_codes = data[data["Customer Code"].isna() | (data["Customer Code"] == "")]
-            if not invalid_customer_codes.empty:
-                validations.append(ValidationResult(
-                    field="Customer Code",
-                    status="fail",
-                    message=f"Found {len(invalid_customer_codes)} empty customer codes"
-                ))
-                failed_rows += len(invalid_customer_codes)
-            else:
-                validations.append(ValidationResult(
-                    field="Customer Code",
-                    status="pass",
-                    message="All customer codes are valid"
-                ))
-        
-        # Validate amounts
-        amount_validation = self._validate_amounts(data, ["Total Amount", "Outstanding Amount", "Past Due Amount"])
-        validations.append(amount_validation)
-        if amount_validation.status == "fail":
-            failed_rows += len(amount_validation.details) if amount_validation.details else 0
-        
-        # Validate currency
-        if "Currency of Contract" in data.columns:
-            valid_currencies = ["TZS", "USD", "EUR", "GBP"]
-            invalid_currencies = data[~data["Currency of Contract"].isin(valid_currencies)]
-            if not invalid_currencies.empty:
-                validations.append(ValidationResult(
-                    field="Currency",
-                    status="warning",
-                    message=f"Found {len(invalid_currencies)} records with non-standard currencies"
-                ))
-            else:
-                validations.append(ValidationResult(
-                    field="Currency",
-                    status="pass",
-                    message="All currencies are valid"
-                ))
-        
-        passed_rows = total_rows - failed_rows
-        status = "fail" if failed_rows > total_rows * 0.1 else "warning" if failed_rows > 0 else "pass"
-        
-        return SheetValidation(
-            status=status,
-            total_rows=total_rows,
-            passed_rows=passed_rows,
-            failed_rows=failed_rows,
-            validations=validations
-        )
-    
-    def _validate_subject_relation(self, data: pd.DataFrame) -> SheetValidation:
-        """Validate Subject Relation sheet"""
-        validations = []
-        failed_rows = 0
-        total_rows = len(data)
-        
-        # Validate National IDs (Tanzanian format)
-        if "National ID" in data.columns:
-            national_id_validation = self._validate_national_ids(data["National ID"])
-            validations.append(national_id_validation)
-            if national_id_validation.status == "fail":
-                failed_rows += len(national_id_validation.details) if national_id_validation.details else 0
-        
-        # Validate phone numbers
-        if "Phone" in data.columns:
-            phone_validation = self._validate_phone_numbers(data["Phone"])
-            validations.append(phone_validation)
-        
-        # Validate relation types
-        if "Relation Type" in data.columns:
-            valid_relations = ["Director", "Shareholder", "Guarantor", "Spouse", "Other"]
-            invalid_relations = data[~data["Relation Type"].isin(valid_relations)]
-            if not invalid_relations.empty:
-                validations.append(ValidationResult(
-                    field="Relation Type",
-                    status="warning",
-                    message=f"Found {len(invalid_relations)} records with non-standard relation types"
-                ))
-            else:
-                validations.append(ValidationResult(
-                    field="Relation Type",
-                    status="pass",
-                    message="All relation types are valid"
-                ))
-        
-        passed_rows = total_rows - failed_rows
-        status = "fail" if failed_rows > total_rows * 0.1 else "warning" if failed_rows > 0 else "pass"
-        
-        return SheetValidation(
-            status=status,
-            total_rows=total_rows,
-            passed_rows=passed_rows,
-            failed_rows=failed_rows,
-            validations=validations
-        )
-    
     def _validate_company_data(self, data: pd.DataFrame) -> SheetValidation:
         """Validate Company sheet"""
         validations = []
@@ -310,7 +167,10 @@ class CITValidator:
         
         # Validate registration numbers
         if "Registration Number" in data.columns:
-            invalid_reg_numbers = data[data["Registration Number"].isna() | (data["Registration Number"] <= 0)]
+            # Fix: Convert to numeric first, then check for invalid values
+            reg_numbers_numeric = pd.to_numeric(data["Registration Number"], errors='coerce')
+            invalid_reg_numbers = data[reg_numbers_numeric.isna() | (reg_numbers_numeric <= 0)]
+            
             if not invalid_reg_numbers.empty:
                 validations.append(ValidationResult(
                     field="Registration Number",
@@ -328,7 +188,10 @@ class CITValidator:
         # Validate Tax IDs (Tanzanian format: XXX-XXX-XXX)
         if "Tax Identification Number" in data.columns:
             tax_id_pattern = r'^\d{3}-\d{3}-\d{3}$'
-            invalid_tax_ids = data[~data["Tax Identification Number"].astype(str).str.match(tax_id_pattern, na=False)]
+            # Fix: Handle NaN values properly
+            tax_ids = data["Tax Identification Number"].fillna('').astype(str)
+            invalid_tax_ids = data[~tax_ids.str.match(tax_id_pattern, na=False)]
+            
             if not invalid_tax_ids.empty:
                 validations.append(ValidationResult(
                     field="Tax ID Format",
@@ -357,7 +220,113 @@ class CITValidator:
             failed_rows=failed_rows,
             validations=validations
         )
-    
+
+    def _validate_contract_data(self, data: pd.DataFrame) -> SheetValidation:
+        """Validate Contract Data sheet"""
+        validations = []
+        failed_rows = 0
+        total_rows = len(data)
+        
+        # Required columns
+        required_columns = [
+            "Reporting Date", "Contract code", "Customer Code", "Phase of Contract",
+            "Type of Contract", "Purpose of Financing", "Total Amount", "Currency of Contract"
+        ]
+        
+        # Check required columns exist
+        missing_cols = [col for col in required_columns if col not in data.columns]
+        if missing_cols:
+            validations.append(ValidationResult(
+                field="Required Columns",
+                status="fail",
+                message=f"Missing columns: {', '.join(missing_cols)}"
+            ))
+            self.critical_issues.append(f"Contract Data: Missing required columns: {', '.join(missing_cols)}")
+        
+        # Validate dates
+        if "Reporting Date" in data.columns:
+            date_validation = self._validate_dates(data, "Reporting Date")
+            validations.append(date_validation)
+            if date_validation.status == "fail":
+                failed_rows += len(date_validation.details) if date_validation.details else 0
+        
+        # Validate contract codes (should be unique)
+        if "Contract code" in data.columns:
+            # Fix: Handle NaN values in contract codes
+            contract_codes = data["Contract code"].fillna('')
+            duplicate_contracts = data[contract_codes.duplicated() & (contract_codes != '')]
+            
+            if not duplicate_contracts.empty:
+                validations.append(ValidationResult(
+                    field="Contract Code",
+                    status="fail",
+                    message=f"Found {len(duplicate_contracts)} duplicate contract codes"
+                ))
+                failed_rows += len(duplicate_contracts)
+                self.critical_issues.append(f"Duplicate contract codes found: {len(duplicate_contracts)} records")
+            else:
+                validations.append(ValidationResult(
+                    field="Contract Code",
+                    status="pass",
+                    message="All contract codes are unique"
+                ))
+        
+        # Validate customer codes
+        if "Customer Code" in data.columns:
+            # Fix: Better handling of empty customer codes
+            customer_codes = data["Customer Code"].fillna('').astype(str)
+            invalid_customer_codes = data[customer_codes.str.strip() == '']
+            
+            if not invalid_customer_codes.empty:
+                validations.append(ValidationResult(
+                    field="Customer Code",
+                    status="fail",
+                    message=f"Found {len(invalid_customer_codes)} empty customer codes"
+                ))
+                failed_rows += len(invalid_customer_codes)
+            else:
+                validations.append(ValidationResult(
+                    field="Customer Code",
+                    status="pass",
+                    message="All customer codes are valid"
+                ))
+        
+        # Validate amounts
+        amount_validation = self._validate_amounts(data, ["Total Amount", "Outstanding Amount", "Past Due Amount"])
+        validations.append(amount_validation)
+        if amount_validation.status == "fail":
+            failed_rows += len(amount_validation.details) if amount_validation.details else 0
+        
+        # Validate currency
+        if "Currency of Contract" in data.columns:
+            valid_currencies = ["TZS", "USD", "EUR", "GBP"]
+            currency_values = data["Currency of Contract"].fillna('').astype(str)
+            invalid_currencies = data[~currency_values.isin(valid_currencies)]
+            
+            if not invalid_currencies.empty:
+                validations.append(ValidationResult(
+                    field="Currency",
+                    status="warning",
+                    message=f"Found {len(invalid_currencies)} records with non-standard currencies"
+                ))
+            else:
+                validations.append(ValidationResult(
+                    field="Currency",
+                    status="pass",
+                    message="All currencies are valid"
+                ))
+        
+        passed_rows = total_rows - failed_rows
+        status = "fail" if failed_rows > total_rows * 0.1 else "warning" if failed_rows > 0 else "pass"
+        
+        return SheetValidation(
+            status=status,
+            total_rows=total_rows,
+            passed_rows=passed_rows,
+            failed_rows=failed_rows,
+            validations=validations
+        )
+
     def _validate_individual_data(self, data: pd.DataFrame) -> SheetValidation:
         """Validate Individual sheet"""
         validations = []
@@ -380,8 +349,10 @@ class CITValidator:
         
         # Validate gender
         if "Gender" in data.columns:
-            valid_genders = ["Male", "Female", "Other"]
-            invalid_genders = data[~data["Gender"].isin(valid_genders)]
+            valid_genders = ["Male", "Female", "Other", "M", "F"]  # Added common variations
+            gender_values = data["Gender"].fillna('').astype(str).str.strip()
+            invalid_genders = data[~gender_values.isin(valid_genders)]
+            
             if not invalid_genders.empty:
                 validations.append(ValidationResult(
                     field="Gender",
@@ -394,6 +365,54 @@ class CITValidator:
                     field="Gender",
                     status="pass",
                     message="All gender values are valid"
+                ))
+        
+        passed_rows = total_rows - failed_rows
+        status = "fail" if failed_rows > total_rows * 0.1 else "warning" if failed_rows > 0 else "pass"
+        
+        return SheetValidation(
+            status=status,
+            total_rows=total_rows,
+            passed_rows=passed_rows,
+            failed_rows=failed_rows,
+            validations=validations
+        )
+
+    def _validate_subject_relation(self, data: pd.DataFrame) -> SheetValidation:
+        """Validate Subject Relation sheet"""
+        validations = []
+        failed_rows = 0
+        total_rows = len(data)
+        
+        # Validate National IDs (Tanzanian format)
+        if "National ID" in data.columns:
+            national_id_validation = self._validate_national_ids(data["National ID"])
+            validations.append(national_id_validation)
+            if national_id_validation.status == "fail":
+                failed_rows += len(national_id_validation.details) if national_id_validation.details else 0
+        
+        # Validate phone numbers
+        if "Phone" in data.columns:
+            phone_validation = self._validate_phone_numbers(data["Phone"])
+            validations.append(phone_validation)
+        
+        # Validate relation types
+        if "Relation Type" in data.columns:
+            valid_relations = ["Director", "Shareholder", "Guarantor", "Spouse", "Other"]
+            relation_values = data["Relation Type"].fillna('').astype(str).str.strip()
+            invalid_relations = data[~relation_values.isin(valid_relations)]
+            
+            if not invalid_relations.empty:
+                validations.append(ValidationResult(
+                    field="Relation Type",
+                    status="warning",
+                    message=f"Found {len(invalid_relations)} records with non-standard relation types"
+                ))
+            else:
+                validations.append(ValidationResult(
+                    field="Relation Type",
+                    status="pass",
+                    message="All relation types are valid"
                 ))
         
         passed_rows = total_rows - failed_rows
